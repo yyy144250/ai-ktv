@@ -1,0 +1,26 @@
+# 核心框架
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+aiofiles==24.1.0
+websockets==13.0
+
+# 日语处理
+fugashi[unidic-lite]==1.4.0
+unidic-lite==1.0.8
+jaconv==0.4.0
+
+# 视频处理
+ffmpeg-python==0.2.0
+
+# ============ 以下为 AI 模型依赖（较大，按需安装）============
+# 取消注释以启用 AI 功能:
+#
+# 人声分离 (约 2GB)
+# demucs==4.0.1
+# torch==2.4.0
+# torchaudio==2.4.0
+#
+# 语音识别 & 时间对齐 (约 3GB)
+# openai-whisper==20240930
+# stable-ts==2.16.0

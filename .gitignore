@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Vite
+frontend/dist/
+
+# AI 模型缓存（太大不入库）
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# 运行时文件
+uploads/
+outputs/
+*.mp4
+*.mkv
+*.avi
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.ass
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
+.env.local
+
+# CodeBuddy
+.codebuddy/
