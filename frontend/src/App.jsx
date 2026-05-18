@@ -10,7 +10,7 @@ import DoneStep from './components/DoneStep'
 
 export default function App() {
   const ktv = useKTV()
-  const { step, error, reset } = ktv
+  const { step, error, reset, clearError, goBack } = ktv
 
   const getStepIndex = () => {
     switch (step) {
@@ -26,6 +26,26 @@ export default function App() {
       default: return 0
     }
   }
+
+  // 根据当前步骤获取重试方法
+  const getRetryAction = () => {
+    switch (step) {
+      case 'separating':
+        return { label: '重试人声分离', action: ktv.retrySeparation }
+      case 'aligning':
+        return { label: '重试对齐', action: ktv.alignLyrics }
+      case 'rendering':
+        return { label: '重试合成', action: () => ktv.renderVideo() }
+      case 'lyrics_edit':
+        // lyrics_edit 步骤的错误可能是对齐/渲染失败回退来的
+        return null
+      default:
+        return null
+    }
+  }
+
+  // 能否返回上一步
+  const canGoBack = ['lyrics', 'lyrics_edit', 'aligning', 'rendering', 'done'].includes(step)
 
   return (
     <div className="min-h-screen relative overflow-hidden">
@@ -47,9 +67,34 @@ export default function App() {
         {/* 错误提示 */}
         {error && (
           <div className="glass-card p-4 mb-6 border-red-500/30 bg-red-500/10">
-            <div className="flex items-center justify-between">
-              <p className="text-red-300 text-sm">⚠️ {error}</p>
-              <button onClick={() => {}} className="text-red-400 text-xs hover:text-red-300">
+            <p className="text-red-300 text-sm mb-3">⚠️ {error}</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              {getRetryAction() && (
+                <button
+                  onClick={() => { clearError(); getRetryAction().action() }}
+                  className="px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-medium transition-all"
+                >
+                  🔄 {getRetryAction().label}
+                </button>
+              )}
+              {canGoBack && (
+                <button
+                  onClick={goBack}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-gray-300 text-xs font-medium transition-all"
+                >
+                  ← 返回上一步
+                </button>
+              )}
+              <button
+                onClick={reset}
+                className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 text-xs transition-all"
+              >
+                从头开始
+              </button>
+              <button
+                onClick={clearError}
+                className="ml-auto text-gray-500 text-xs hover:text-gray-400"
+              >
                 关闭
               </button>
             </div>
@@ -68,6 +113,8 @@ export default function App() {
               progress={ktv.progress}
               message={ktv.message}
               icon="🎵"
+              error={error}
+              onRetry={ktv.retrySeparation}
             />
           )}
 
@@ -96,11 +143,20 @@ export default function App() {
               progress={ktv.progress}
               message={ktv.message}
               icon="⏱️"
+              error={error}
+              onRetry={ktv.alignLyrics}
+              onBack={() => ktv.setStep('lyrics_edit')}
             />
           )}
 
           {step === 'rendering' && (
-            <RenderStep progress={ktv.progress} message={ktv.message} />
+            <RenderStep
+              progress={ktv.progress}
+              message={ktv.message}
+              error={error}
+              onRetry={() => ktv.renderVideo()}
+              onBack={() => ktv.setStep('lyrics_edit')}
+            />
           )}
 
           {step === 'done' && (

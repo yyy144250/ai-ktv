@@ -6,8 +6,12 @@ AI-KTV 视频制作工具 - FastAPI 主应用
 import os
 import uuid
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("ai-ktv")
+logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -131,7 +135,7 @@ async def start_separation(job_id: str):
         raise HTTPException(status_code=404, detail="任务不存在")
 
     job = jobs[job_id]
-    if job["status"] not in ("uploaded", "probed", "failed"):
+    if job["status"] not in ("uploaded", "probed", "failed", "separated"):
         return {"job_id": job_id, "status": job["status"], "message": "任务已在处理中"}
 
     asyncio.create_task(_run_separation(job_id))
@@ -161,13 +165,16 @@ async def submit_lyrics(job_id: str, data: LyricsInput):
     from app.services.furigana import process_lyrics
     lines = process_lyrics(data.text, data.format)
 
+    # LRC/ASS 格式自带时间戳，直接标记为已对齐
+    has_time = any(line.get("start_time") is not None for line in lines)
+
     jobs[job_id]["lyrics"] = {
         "source": "manual",
         "lines": lines,
-        "aligned": False,
+        "aligned": has_time,
     }
     jobs[job_id]["status"] = "lyrics_ready"
-    jobs[job_id]["message"] = "歌词已提交，假名已标注"
+    jobs[job_id]["message"] = "歌词已提交" + ("，时间轴已就绪" if has_time else "，假名已标注")
 
     await _push_progress(job_id, jobs[job_id])
     return {"job_id": job_id, "lyrics": jobs[job_id]["lyrics"]}
@@ -499,6 +506,8 @@ async def _run_alignment(job_id: str):
 
     try:
         from app.services.alignment import align_lyrics
+        import traceback as _tb
+        logger.info(f"[{job_id}] 开始对齐, vocals: {vocals_path}, lines: {len(lyrics_lines)}")
         aligned_lines = await align_lyrics(vocals_path, lyrics_lines, job_id, _push_progress, jobs)
 
         jobs[job_id]["lyrics"]["lines"] = aligned_lines
@@ -506,10 +515,14 @@ async def _run_alignment(job_id: str):
         jobs[job_id]["status"] = "lyrics_ready"
         jobs[job_id]["progress"] = 100
         jobs[job_id]["message"] = "时间轴对齐完成！可以渲染视频"
+        logger.info(f"[{job_id}] 对齐成功, aligned {len(aligned_lines)} lines")
         await _push_progress(job_id, jobs[job_id])
 
     except Exception as e:
+        import traceback as _tb
+        logger.error(f"[{job_id}] 对齐失败: {e}\n{_tb.format_exc()}")
         jobs[job_id]["status"] = "lyrics_ready"
+        jobs[job_id]["error"] = str(e)
         jobs[job_id]["message"] = f"时间轴对齐失败: {e}"
         await _push_progress(job_id, jobs[job_id])
 
@@ -529,11 +542,25 @@ async def _run_render(job_id: str, options: RenderOptions):
         from app.services.subtitle import generate_ass_subtitle
         from app.services.composer import compose_video
 
-        # Step 1: 生成 ASS 字幕
+        # Step 1: 补充缺失的逐字时间（LRC 只有行时间）
+        lines = job["lyrics"]["lines"]
+        for line in lines:
+            if not line.get("words") and line.get("start_time") is not None and line.get("end_time") is not None:
+                text = line["text"]
+                start = line["start_time"]
+                end = line["end_time"]
+                if text and end > start:
+                    char_dur = (end - start) / len(text)
+                    line["words"] = [
+                        {"text": c, "start": round(start + i * char_dur, 3), "end": round(start + (i+1) * char_dur, 3)}
+                        for i, c in enumerate(text)
+                    ]
+
+        # Step 2: 生成 ASS 字幕
         subtitle_path = out_dir / "subtitle.ass"
         video_info = job["video_info"]
         generate_ass_subtitle(
-            lines=job["lyrics"]["lines"],
+            lines=lines,
             output_path=subtitle_path,
             video_width=video_info.get("width", 1920),
             video_height=video_info.get("height", 1080),
@@ -551,7 +578,7 @@ async def _run_render(job_id: str, options: RenderOptions):
         accomp_path = job["separation"]["accompaniment_path"]
         output_path = out_dir / "final.mp4"
 
-        await compose_video(
+        actual_output = await compose_video(
             video_path=video_path,
             audio_path=accomp_path,
             subtitle_path=str(subtitle_path),
@@ -561,10 +588,14 @@ async def _run_render(job_id: str, options: RenderOptions):
             jobs=jobs,
         )
 
+        # compose_video 可能把路径改为 .mkv（软字幕模式）
+        actual_output = jobs[job_id].pop("_output_path_override", None) or actual_output or str(output_path)
+        final_name = os.path.basename(actual_output)
+
         # 完成
         jobs[job_id]["output"] = {
-            "video_path": str(output_path),
-            "video_url": f"/outputs/{job_id}/final.mp4",
+            "video_path": str(actual_output),
+            "video_url": f"/outputs/{job_id}/{final_name}",
             "subtitle_path": str(subtitle_path),
             "subtitle_url": f"/outputs/{job_id}/subtitle.ass",
         }
@@ -574,7 +605,9 @@ async def _run_render(job_id: str, options: RenderOptions):
         await _push_progress(job_id, jobs[job_id])
 
     except Exception as e:
-        jobs[job_id]["status"] = "failed"
+        logger.error(f"[{job_id}] 渲染失败: {e}")
+        jobs[job_id]["status"] = "lyrics_ready"
+        jobs[job_id]["error"] = str(e)
         jobs[job_id]["message"] = f"视频合成失败: {e}"
         await _push_progress(job_id, jobs[job_id])
 

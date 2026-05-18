@@ -112,6 +112,10 @@ export function useKTV() {
         setStep('recognizing')
         break
       case 'lyrics_ready':
+        // 检查是否有 error 信息（对齐失败的情况）
+        if (data?.error || (data?.message && data.message.includes('失败'))) {
+          setError(data.message || data.error || '操作失败')
+        }
         setStep('lyrics_edit')
         break
       case 'aligning':
@@ -273,6 +277,49 @@ export function useKTV() {
     }
   }, [jobId, connectWs])
 
+  // 清除错误
+  const clearError = useCallback(() => setError(null), [])
+
+  // 回退到上一步（不丢失数据）
+  const goBack = useCallback(() => {
+    setError(null)
+    switch (step) {
+      case 'lyrics':
+      case 'recognizing':
+        // 回到分离完成状态不合理，停留在歌词页
+        break
+      case 'lyrics_edit':
+        setStep('lyrics')
+        break
+      case 'aligning':
+        setStep('lyrics_edit')
+        break
+      case 'rendering':
+        setStep('lyrics_edit')
+        break
+      case 'done':
+        setStep('lyrics_edit')
+        break
+      default:
+        break
+    }
+  }, [step])
+
+  // 重试当前步骤
+  const retrySeparation = useCallback(async () => {
+    if (!jobId) return
+    setError(null)
+    setStep('separating')
+    setMessage('正在重新分离人声...')
+    connectWs(jobId)
+    try {
+      const res = await fetch(`${API}/jobs/${jobId}/separate`, { method: 'POST' })
+      if (!res.ok) throw new Error('启动人声分离失败')
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [jobId, connectWs])
+
   // 重置
   const reset = useCallback(() => {
     cleanup()
@@ -288,5 +335,6 @@ export function useKTV() {
     jobId, job, step, progress, message, error,
     uploadVideo, recognizeLyrics, submitLyrics,
     updateLyrics, alignLyrics, renderVideo, reset,
+    clearError, goBack, retrySeparation, setStep,
   }
 }
