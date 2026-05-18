@@ -1,10 +1,18 @@
+# 带 NVIDIA GPU 支持的 docker-compose
+# 使用方式: docker-compose -f docker-compose.gpu.yml up --build
+#
+# 前提条件:
+# 1. 安装 NVIDIA 驱动
+# 2. 安装 nvidia-container-toolkit
+#    https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+
 version: '3.9'
 
 services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gpu
     ports:
       - "8000:8000"
     volumes:
@@ -14,6 +22,14 @@ services:
       - whisper_cache:/root/.cache/whisper
     environment:
       - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
 
   frontend:

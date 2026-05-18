@@ -95,10 +95,48 @@ npm run dev
 - 前端界面: http://localhost:5173
 - API 文档: http://localhost:8000/docs
 
-### 方式三：Docker（适合部署）
+### 方式三：Docker 部署到服务器（推荐生产环境）
+
+#### 无 GPU 服务器（只需 2核4G，够用在线歌词功能）
 
 ```bash
-docker-compose up --build
+# 在服务器上
+git clone https://github.com/yyy144250/ai-ktv.git
+cd ai-ktv
+docker-compose up -d --build
+```
+
+访问 `http://你的服务器IP` 即可使用。
+
+#### 有 GPU 服务器（支持 AI 功能）
+
+```bash
+# 前提：已安装 NVIDIA 驱动 + nvidia-container-toolkit
+docker-compose -f docker-compose.gpu.yml up -d --build
+```
+
+#### 裸机部署（不用 Docker）
+
+```bash
+# 1. 安装系统依赖
+sudo apt install -y ffmpeg python3.11 python3.11-venv nodejs npm
+
+# 2. 后端
+cd backend
+python3.11 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+# 可选 AI 依赖: pip install torch demucs openai-whisper stable-ts
+ENV=prod nohup python run.py > backend.log 2>&1 &
+
+# 3. 前端
+cd ../frontend
+npm install && npm run build
+
+# 4. 用 Nginx 托管前端 + 反代后端
+sudo cp nginx.conf /etc/nginx/sites-available/ai-ktv
+sudo ln -s /etc/nginx/sites-available/ai-ktv /etc/nginx/sites-enabled/
+# 注意：裸机部署时需把 nginx.conf 中的 proxy_pass 改为 http://127.0.0.1:8000
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ---
