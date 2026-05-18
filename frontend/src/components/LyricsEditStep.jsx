@@ -1,7 +1,10 @@
 import { useState } from 'react'
-import { Edit3, Clock, Film } from 'lucide-react'
+import { Clock, Film, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react'
 
-export default function LyricsEditStep({ job, onUpdate, onAlign, onRender }) {
+export default function LyricsEditStep({
+  job, onUpdate, onAlign, onRender,
+  separationStatus, separationProgress, separationMessage, onRetrySeparation,
+}) {
   const [editing, setEditing] = useState(null) // 编辑中的行索引
   const [editReading, setEditReading] = useState('')
   const [style, setStyle] = useState('classic_blue')
@@ -9,6 +12,7 @@ export default function LyricsEditStep({ job, onUpdate, onAlign, onRender }) {
   const lyrics = job?.lyrics
   const lines = lyrics?.lines || []
   const isAligned = lyrics?.aligned
+  const separationDone = separationStatus === 'done'
 
   // 修改某行某字的假名
   const handleEditFurigana = (lineIdx, charIdx, newReading) => {
@@ -21,23 +25,86 @@ export default function LyricsEditStep({ job, onUpdate, onAlign, onRender }) {
 
   return (
     <div className="glass-card p-6">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold text-white">歌词预览 & 编辑</h2>
         <div className="flex gap-2">
           {!isAligned && (
-            <button onClick={onAlign} className="btn-primary text-sm">
+            <button
+              onClick={onAlign}
+              disabled={!separationDone}
+              className={`btn-primary text-sm ${!separationDone ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title={!separationDone ? '需要等待人声分离完成' : ''}
+            >
               <Clock size={14} className="inline mr-1" />
               自动对齐时间轴
             </button>
           )}
           {isAligned && (
-            <button onClick={() => onRender({ style })} className="btn-accent text-sm">
+            <button
+              onClick={() => onRender({ style })}
+              disabled={!separationDone}
+              className={`btn-accent text-sm ${!separationDone ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title={!separationDone ? '需要等待人声分离完成（需要伴奏音轨）' : ''}
+            >
               <Film size={14} className="inline mr-1" />
               生成 KTV 视频
             </button>
           )}
         </div>
       </div>
+
+      {/* 分离状态横幅 */}
+      {separationStatus === 'running' && (
+        <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 mb-4">
+          <div className="flex items-center gap-3">
+            <Loader2 size={16} className="text-blue-400 animate-spin flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm text-blue-300">{separationMessage || '人声分离中...'}</span>
+                <span className="text-xs text-blue-400 font-mono">{separationProgress}%</span>
+              </div>
+              <div className="h-1.5 bg-blue-900/30 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(2, separationProgress)}%` }}
+                />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-blue-400/60 mt-2 ml-7">
+            {isAligned
+              ? '歌词时间轴已就绪，等分离完成即可生成视频'
+              : '分离完成后可使用"对齐时间轴"和"生成视频"功能'}
+          </p>
+        </div>
+      )}
+
+      {separationStatus === 'done' && (
+        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 mb-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} className="text-emerald-400 flex-shrink-0" />
+            <span className="text-sm text-emerald-300">人声分离完成，所有功能可用</span>
+          </div>
+        </div>
+      )}
+
+      {separationStatus === 'failed' && (
+        <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 mb-4">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={16} className="text-red-400 flex-shrink-0" />
+            <span className="text-sm text-red-300 flex-1">{separationMessage || '人声分离失败'}</span>
+            {onRetrySeparation && (
+              <button
+                onClick={onRetrySeparation}
+                className="flex items-center gap-1 px-3 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-medium transition-all flex-shrink-0"
+              >
+                <RefreshCw size={12} />
+                重试分离
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 字幕样式选择 */}
       {isAligned && (
@@ -69,8 +136,12 @@ export default function LyricsEditStep({ job, onUpdate, onAlign, onRender }) {
         isAligned ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'
       }`}>
         {isAligned
-          ? '✅ 时间轴已对齐，可以生成视频'
-          : '⚠️ 时间轴尚未对齐，请先对齐或直接生成（如已有 LRC 时间信息）'
+          ? separationDone
+            ? '✅ 时间轴已对齐，可以生成视频'
+            : '⏳ 时间轴已对齐，等待人声分离完成后即可生成视频'
+          : separationDone
+            ? '⚠️ 时间轴尚未对齐，请点击"自动对齐时间轴"'
+            : '⏳ 时间轴尚未对齐，等待人声分离完成后可对齐'
         }
       </div>
 

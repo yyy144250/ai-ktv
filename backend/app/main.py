@@ -59,6 +59,18 @@ class LyricsUpdate(BaseModel):
     lines: list[dict]  # [{text, ruby: [{char, reading}], ...}]
 
 
+class LyricsSearchQuery(BaseModel):
+    """歌词搜索请求"""
+    keyword: str       # 歌曲名
+    artist: str = ""   # 歌手名（可选）
+
+
+class LyricsFetchRequest(BaseModel):
+    """获取指定歌曲的 LRC 歌词"""
+    source: str   # "netease"
+    song_id: str  # 歌曲 ID
+
+
 class RenderOptions(BaseModel):
     """渲染选项"""
     style: str = "classic_blue"  # classic_blue | pink | gold
@@ -180,6 +192,59 @@ async def submit_lyrics(job_id: str, data: LyricsInput):
     return {"job_id": job_id, "lyrics": jobs[job_id]["lyrics"]}
 
 
+@app.post("/api/jobs/{job_id}/search-lyrics")
+async def search_lyrics_api(job_id: str, data: LyricsSearchQuery):
+    """搜索在线歌词"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    from app.services.lyrics_search import search_lyrics
+    try:
+        results = await search_lyrics(data.keyword, data.artist)
+        return {"job_id": job_id, "results": results}
+    except Exception as e:
+        logger.error(f"[{job_id}] 歌词搜索失败: {e}")
+        raise HTTPException(status_code=500, detail=f"搜索失败: {e}")
+
+
+@app.post("/api/jobs/{job_id}/fetch-lyrics")
+async def fetch_lyrics_api(job_id: str, data: LyricsFetchRequest):
+    """获取指定歌曲的 LRC 歌词并自动提交"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    from app.services.lyrics_search import fetch_lyrics
+    from app.services.furigana import process_lyrics
+
+    try:
+        result = await fetch_lyrics(data.source, data.song_id)
+        lrc_text = result["lrc"]
+
+        # 解析 LRC 并标注假名
+        lines = process_lyrics(lrc_text, "lrc")
+
+        has_time = any(line.get("start_time") is not None for line in lines)
+
+        jobs[job_id]["lyrics"] = {
+            "source": f"search:{data.source}",
+            "lines": lines,
+            "aligned": has_time,
+        }
+        jobs[job_id]["status"] = "lyrics_ready"
+        jobs[job_id]["message"] = "在线歌词已导入" + ("，时间轴已就绪" if has_time else "")
+
+        await _push_progress(job_id, jobs[job_id])
+        return {
+            "job_id": job_id,
+            "lyrics": jobs[job_id]["lyrics"],
+            "lrc_preview": result.get("preview", ""),
+            "translation": result.get("tlrc"),
+        }
+    except Exception as e:
+        logger.error(f"[{job_id}] 获取歌词失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取歌词失败: {e}")
+
+
 @app.put("/api/jobs/{job_id}/lyrics")
 async def update_lyrics(job_id: str, data: LyricsUpdate):
     """修改歌词/假名"""
@@ -221,6 +286,8 @@ async def render_video(job_id: str, options: RenderOptions = RenderOptions()):
         raise HTTPException(status_code=400, detail="请先提交歌词")
     if not job["lyrics"].get("aligned"):
         raise HTTPException(status_code=400, detail="请先对齐时间轴")
+    if not job.get("separation") or job["separation"].get("status") != "done":
+        raise HTTPException(status_code=400, detail="请先完成人声分离，需要伴奏音轨来合成视频")
 
     asyncio.create_task(_run_render(job_id, options))
     return {"job_id": job_id, "status": "rendering"}

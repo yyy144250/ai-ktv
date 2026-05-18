@@ -1,6 +1,8 @@
 /**
  * AI-KTV 核心 Hook
  * 管理整个 KTV 视频制作流程的状态
+ *
+ * 流程优化：上传后立即进入歌词步骤，人声分离在后台并行执行
  */
 import { useState, useRef, useCallback, useEffect } from 'react'
 
@@ -9,12 +11,22 @@ const API = '/api'
 export function useKTV() {
   const [jobId, setJobId] = useState(null)
   const [job, setJob] = useState(null)
-  const [step, setStep] = useState('upload') // upload | separating | lyrics | aligning | rendering | done
+  const [step, setStep] = useState('upload') // upload | lyrics | lyrics_edit | aligning | rendering | done
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState(null)
+
+  // 人声分离状态（后台并行，不影响 step）
+  const [separationStatus, setSeparationStatus] = useState('idle')
+  // idle | running | done | failed
+  const [separationProgress, setSeparationProgress] = useState(0)
+  const [separationMessage, setSeparationMessage] = useState('')
+
   const wsRef = useRef(null)
   const pollRef = useRef(null)
+  // 记录前端当前 step，避免 WS 消息覆盖用户主动设置的 step
+  const stepRef = useRef('upload')
+  stepRef.current = step
 
   // 清理
   const cleanup = useCallback(() => {
@@ -30,89 +42,45 @@ export function useKTV() {
 
   useEffect(() => () => cleanup(), [cleanup])
 
-  // WebSocket 监听 — 每次需要实时追踪时调用
-  const connectWs = useCallback((id) => {
-    // 关闭旧连接但不清轮询
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
+  // 处理后端推送的状态数据
+  const _handleBackendData = useCallback((data) => {
+    if (!data?.status) return
+
+    setJob(data)
+    const status = data.status
+    const currentStep = stepRef.current
+
+    // ---- 分离相关状态：更新分离进度，不切换 step ----
+    if (status === 'separating') {
+      setSeparationStatus('running')
+      setSeparationProgress(data.progress ?? 0)
+      setSeparationMessage(data.message ?? '人声分离中...')
+      return  // 不影响主 step
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/${id}`)
-    wsRef.current = ws
-
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        setJob(data)
-        setProgress(data.progress ?? 0)
-        setMessage(data.message ?? '')
-        _updateStep(data)
-      } catch (err) {
-        console.error('WS parse error:', err)
+    if (status === 'separated') {
+      setSeparationStatus('done')
+      setSeparationProgress(100)
+      setSeparationMessage('人声分离完成')
+      // 如果用户还在歌词步骤，不切换 step（让用户继续操作歌词）
+      if (currentStep === 'lyrics' || currentStep === 'lyrics_edit') {
+        return
       }
     }
 
-    ws.onerror = () => {
-      startPolling(id)
-    }
-
-    ws.onclose = () => {
-      wsRef.current = null
-      // WS 断开后启动轮询兜底
-      startPolling(id)
-    }
-  }, [])
-
-  // 轮询 — 作为 WS 的兜底
-  const startPolling = useCallback((id) => {
-    if (pollRef.current) return
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`${API}/jobs/${id}`)
-        if (res.ok) {
-          const data = await res.json()
-          setJob(data)
-          setProgress(data.progress ?? 0)
-          setMessage(data.message ?? '')
-          _updateStep(data)
-
-          // 到稳定态时停止轮询
-          const s = data.status
-          if (s === 'done' || s === 'failed' || s === 'separated' ||
-              s === 'lyrics_ready' || s === 'probed') {
-            clearInterval(pollRef.current)
-            pollRef.current = null
-          }
-        }
-      } catch (e) {
-        console.error('Poll error:', e)
-      }
-    }, 1500)
-  }, [])
-
-  // 根据后端状态更新前端步骤
-  const _updateStep = (data) => {
-    const status = data?.status
-    if (!status) return
+    // ---- 其他状态正常处理 ----
+    setProgress(data.progress ?? 0)
+    setMessage(data.message ?? '')
 
     switch (status) {
       case 'uploaded':
       case 'probed':
-        setStep('uploaded')
-        break
-      case 'separating':
-        setStep('separating')
-        break
-      case 'separated':
-        setStep('lyrics')
+        // 不覆盖：上传后前端已主动进入 lyrics
         break
       case 'recognizing':
         setStep('recognizing')
         break
       case 'lyrics_ready':
-        // 检查是否有 error 信息（对齐失败的情况）
         if (data?.error || (data?.message && data.message.includes('失败'))) {
           setError(data.message || data.error || '操作失败')
         }
@@ -128,19 +96,77 @@ export function useKTV() {
         setStep('done')
         break
       case 'failed':
-        setError(data.message || '发生错误')
+        // 分离失败
+        if (currentStep === 'lyrics') {
+          setSeparationStatus('failed')
+          setSeparationMessage(data.message || '人声分离失败')
+          setError(data.message || '人声分离失败')
+        } else {
+          setError(data.message || '发生错误')
+        }
         break
     }
-  }
+  }, [])
+
+  // WebSocket 监听
+  const connectWs = useCallback((id) => {
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/${id}`)
+    wsRef.current = ws
+
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        _handleBackendData(data)
+      } catch (err) {
+        console.error('WS parse error:', err)
+      }
+    }
+
+    ws.onerror = () => startPolling(id)
+    ws.onclose = () => {
+      wsRef.current = null
+      startPolling(id)
+    }
+  }, [_handleBackendData])
+
+  // 轮询兜底
+  const startPolling = useCallback((id) => {
+    if (pollRef.current) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/jobs/${id}`)
+        if (res.ok) {
+          const data = await res.json()
+          _handleBackendData(data)
+
+          const s = data.status
+          // done/failed 时停止轮询；lyrics_ready 也停止（用户后续操作会重新触发 WS/轮询）
+          if (s === 'done' || s === 'failed') {
+            clearInterval(pollRef.current)
+            pollRef.current = null
+          }
+        }
+      } catch (e) {
+        console.error('Poll error:', e)
+      }
+    }, 1500)
+  }, [_handleBackendData])
 
   // ========== Actions ==========
 
-  // 上传视频
+  // 上传视频 → 自动启动分离 → 立即进入歌词步骤
   const uploadVideo = useCallback(async (file) => {
     setError(null)
     setStep('uploading')
     setProgress(0)
     setMessage('上传中...')
+    setSeparationStatus('idle')
 
     try {
       const form = new FormData()
@@ -156,11 +182,18 @@ export function useKTV() {
       setJobId(job_id)
       connectWs(job_id)
 
-      // 自动开始分离
-      setStep('separating')
-      setMessage('正在提取音频并分离人声...')
+      // 启动后台分离
+      setSeparationStatus('running')
+      setSeparationMessage('正在提取音频...')
       const sepRes = await fetch(`${API}/jobs/${job_id}/separate`, { method: 'POST' })
-      if (!sepRes.ok) throw new Error('启动人声分离失败')
+      if (!sepRes.ok) {
+        setSeparationStatus('failed')
+        setSeparationMessage('启动人声分离失败')
+      }
+
+      // 立即进入歌词步骤，用户可以边等分离边搜索歌词
+      setStep('lyrics')
+      setMessage('')
 
     } catch (err) {
       setError(err.message)
@@ -168,12 +201,13 @@ export function useKTV() {
     }
   }, [connectWs])
 
-  // AI 识别歌词
+  // AI 识别歌词（需要分离完成）
   const recognizeLyrics = useCallback(async () => {
     if (!jobId) return
     setError(null)
     setStep('recognizing')
     setMessage('正在识别歌词...')
+    setProgress(0)
 
     try {
       const res = await fetch(`${API}/jobs/${jobId}/recognize`, { method: 'POST' })
@@ -211,6 +245,51 @@ export function useKTV() {
     }
   }, [jobId])
 
+  // 搜索在线歌词
+  const searchLyrics = useCallback(async (keyword, artist = '') => {
+    if (!jobId) return []
+    try {
+      const res = await fetch(`${API}/jobs/${jobId}/search-lyrics`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword, artist }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || '搜索失败')
+      }
+      const data = await res.json()
+      return data.results || []
+    } catch (err) {
+      setError(err.message)
+      return []
+    }
+  }, [jobId])
+
+  // 从在线源获取 LRC 歌词并提交
+  const fetchAndSubmitLyrics = useCallback(async (source, songId) => {
+    if (!jobId) return
+    setError(null)
+
+    try {
+      const res = await fetch(`${API}/jobs/${jobId}/fetch-lyrics`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source, song_id: songId }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || '获取歌词失败')
+      }
+      const data = await res.json()
+      setJob(prev => ({ ...prev, lyrics: data.lyrics, status: 'lyrics_ready' }))
+      setStep('lyrics_edit')
+      setMessage('在线歌词已导入，时间轴已就绪')
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [jobId])
+
   // 更新歌词
   const updateLyrics = useCallback(async (lines) => {
     if (!jobId) return
@@ -239,7 +318,7 @@ export function useKTV() {
     setError(null)
     setStep('aligning')
     setMessage('正在对齐时间轴...')
-    connectWs(jobId)  // 重新建立 WS 追踪进度
+    connectWs(jobId)
 
     try {
       const res = await fetch(`${API}/jobs/${jobId}/align`, { method: 'POST' })
@@ -259,7 +338,7 @@ export function useKTV() {
     setError(null)
     setStep('rendering')
     setMessage('正在生成 KTV 视频...')
-    connectWs(jobId)  // 重新建立 WS 追踪进度
+    connectWs(jobId)
 
     try {
       const res = await fetch(`${API}/jobs/${jobId}/render`, {
@@ -280,13 +359,12 @@ export function useKTV() {
   // 清除错误
   const clearError = useCallback(() => setError(null), [])
 
-  // 回退到上一步（不丢失数据）
+  // 回退
   const goBack = useCallback(() => {
     setError(null)
     switch (step) {
       case 'lyrics':
       case 'recognizing':
-        // 回到分离完成状态不合理，停留在歌词页
         break
       case 'lyrics_edit':
         setStep('lyrics')
@@ -305,17 +383,20 @@ export function useKTV() {
     }
   }, [step])
 
-  // 重试当前步骤
+  // 重试分离
   const retrySeparation = useCallback(async () => {
     if (!jobId) return
     setError(null)
-    setStep('separating')
-    setMessage('正在重新分离人声...')
+    setSeparationStatus('running')
+    setSeparationProgress(0)
+    setSeparationMessage('正在重新分离人声...')
     connectWs(jobId)
     try {
       const res = await fetch(`${API}/jobs/${jobId}/separate`, { method: 'POST' })
       if (!res.ok) throw new Error('启动人声分离失败')
     } catch (err) {
+      setSeparationStatus('failed')
+      setSeparationMessage(err.message)
       setError(err.message)
     }
   }, [jobId, connectWs])
@@ -329,11 +410,16 @@ export function useKTV() {
     setProgress(0)
     setMessage('')
     setError(null)
+    setSeparationStatus('idle')
+    setSeparationProgress(0)
+    setSeparationMessage('')
   }, [cleanup])
 
   return {
     jobId, job, step, progress, message, error,
+    separationStatus, separationProgress, separationMessage,
     uploadVideo, recognizeLyrics, submitLyrics,
+    searchLyrics, fetchAndSubmitLyrics,
     updateLyrics, alignLyrics, renderVideo, reset,
     clearError, goBack, retrySeparation, setStep,
   }

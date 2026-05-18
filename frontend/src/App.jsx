@@ -16,13 +16,12 @@ export default function App() {
     switch (step) {
       case 'upload':
       case 'uploading': return 0
-      case 'separating': return 1
       case 'lyrics':
-      case 'recognizing': return 2
-      case 'lyrics_edit': return 3
-      case 'aligning': return 4
-      case 'rendering': return 5
-      case 'done': return 6
+      case 'recognizing': return 1
+      case 'lyrics_edit': return 2
+      case 'aligning': return 3
+      case 'rendering': return 4
+      case 'done': return 5
       default: return 0
     }
   }
@@ -30,15 +29,10 @@ export default function App() {
   // 根据当前步骤获取重试方法
   const getRetryAction = () => {
     switch (step) {
-      case 'separating':
-        return { label: '重试人声分离', action: ktv.retrySeparation }
       case 'aligning':
         return { label: '重试对齐', action: ktv.alignLyrics }
       case 'rendering':
         return { label: '重试合成', action: () => ktv.renderVideo() }
-      case 'lyrics_edit':
-        // lyrics_edit 步骤的错误可能是对齐/渲染失败回退来的
-        return null
       default:
         return null
     }
@@ -107,24 +101,19 @@ export default function App() {
             <UploadStep onUpload={ktv.uploadVideo} loading={step === 'uploading'} />
           )}
 
-          {step === 'separating' && (
-            <ProcessingStep
-              title="人声分离中"
-              progress={ktv.progress}
-              message={ktv.message}
-              icon="🎵"
-              error={error}
-              onRetry={ktv.retrySeparation}
-            />
-          )}
-
           {(step === 'lyrics' || step === 'recognizing') && (
             <LyricsStep
               onSubmit={ktv.submitLyrics}
               onRecognize={ktv.recognizeLyrics}
+              onSearchLyrics={ktv.searchLyrics}
+              onFetchLyrics={ktv.fetchAndSubmitLyrics}
               recognizing={step === 'recognizing'}
               progress={ktv.progress}
               message={ktv.message}
+              separationStatus={ktv.separationStatus}
+              separationProgress={ktv.separationProgress}
+              separationMessage={ktv.separationMessage}
+              onRetrySeparation={ktv.retrySeparation}
             />
           )}
 
@@ -134,6 +123,10 @@ export default function App() {
               onUpdate={ktv.updateLyrics}
               onAlign={ktv.alignLyrics}
               onRender={ktv.renderVideo}
+              separationStatus={ktv.separationStatus}
+              separationProgress={ktv.separationProgress}
+              separationMessage={ktv.separationMessage}
+              onRetrySeparation={ktv.retrySeparation}
             />
           )}
 
