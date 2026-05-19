@@ -8,7 +8,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| 🎵 **AI 去人声** | Demucs v4 深度学习人声分离 |
+| 🎵 **AI 去人声** | 支持 Demucs v4（高质量）和 vocal-remover（轻量 CPU）双引擎 |
 | 🤖 **AI 歌词识别** | Whisper 自动识别日语歌词 + 逐字时间戳 |
 | 🔍 **在线歌词搜索** | 从网易云等平台搜索带时间轴的 LRC 歌词 |
 | あ **振り仮名标注** | MeCab/fugashi 自动为汉字标注假名读音 |
@@ -97,7 +97,7 @@ npm run dev
 
 ### 方式三：Docker 部署到服务器（推荐生产环境）
 
-#### 无 GPU 服务器（只需 2核4G，够用在线歌词功能）
+#### 无 GPU 服务器（2核4G 即可，支持人声分离 + 在线歌词）
 
 ```bash
 # 在服务器上
@@ -106,9 +106,9 @@ cd ai-ktv
 docker-compose up -d --build
 ```
 
-访问 `http://你的服务器IP` 即可使用。
+访问 `http://你的服务器IP` 即可使用。（人声分离使用 vocal-remover 引擎，CPU 约 2-3 分钟/首歌）
 
-#### 有 GPU 服务器（支持 AI 功能）
+#### 有 GPU 服务器（Demucs 高质量分离 + Whisper AI 识别）
 
 ```bash
 # 前提：已安装 NVIDIA 驱动 + nvidia-container-toolkit
@@ -145,24 +145,38 @@ sudo nginx -t && sudo systemctl reload nginx
 
 这个项目有两类依赖：
 
-### 基础依赖（必须安装，~50MB）
+### 基础依赖（~200MB，含轻量人声分离）
 
 `pip install -r requirements.txt` 会安装：
 - FastAPI + Uvicorn（Web 框架）
 - fugashi + unidic-lite（日语假名标注）
 - aiohttp（HTTP 客户端，用于歌词搜索）
+- **torch CPU + librosa**（vocal-remover 轻量人声分离）
 - 其他轻量库
 
-安装后即可使用：**在线歌词搜索、手动歌词输入、假名标注、字幕生成、视频合成**
+安装后即可使用：**在线歌词搜索、手动歌词输入、假名标注、字幕生成、视频合成、人声分离（CPU 模式）**
 
-### AI 模型依赖（按需安装，~5GB）
+### 🎵 人声分离引擎对比
+
+项目内置两种引擎，自动检测切换：
+
+| 引擎 | 模型大小 | 速度（4分钟歌曲） | 质量 | 硬件要求 | 安装方式 |
+|------|---------|------------------|------|---------|----------|
+| **vocal-remover** (默认) | 55MB | CPU 2-3 分钟 | ⭐⭐⭐⭐ | 2核4G 即可 | `pip install -r requirements.txt` |
+| **Demucs v4** (高质量) | 1GB | GPU 30秒 / CPU 15分钟 | ⭐⭐⭐⭐⭐ | 建议 GPU + 8G | 额外安装 `demucs` |
+
+> 首次使用 vocal-remover 时会自动下载模型（55MB），存放在 `backend/models/vocal-remover/`
+
+**切换引擎**：设置环境变量 `SEPARATOR_ENGINE=demucs` 或 `SEPARATOR_ENGINE=vocal-remover`
+
+### 重型 AI 依赖（按需安装，~5GB）
 
 这些在 `requirements.txt` 中被注释掉了，需要手动安装：
 
 | 包 | 大小 | 功能 | 何时需要 |
 |----|------|------|----------|
-| `torch` + `torchaudio` | ~2GB | PyTorch 运行时 | 使用 AI 功能时 |
-| `demucs` | ~300MB (+模型 ~1GB) | 人声分离 | 需要去除MV中的人声时 |
+| `demucs` | ~300MB (+模型 ~1GB) | 高质量人声分离 | 想要更好的分离效果时 |
+| `torchaudio` | ~50MB | Demucs 依赖 | 使用 Demucs 时 |
 | `openai-whisper` | ~100MB (+模型 ~3GB) | 语音识别 | 使用 AI 识别歌词时 |
 | `stable-ts` | ~10MB | 时间轴对齐 | 纯文本歌词需要对齐时 |
 
@@ -185,18 +199,19 @@ pip install demucs==4.0.1
 pip install openai-whisper==20240930 stable-ts==2.16.0
 ```
 
-### 💡 不安装 AI 依赖也能用！
+### 💡 最简安装也能人声分离！
 
-如果你只想用「搜索在线歌词」功能（推荐方式），**不需要安装任何 AI 依赖**：
+和之前不同，现在**基础依赖就包含人声分离能力**（vocal-remover 引擎）：
 
-1. 上传 MV → 搜索歌词（网易云 LRC，自带时间轴）→ 生成视频
+1. `pip install -r requirements.txt` → 即可使用人声分离 + 歌词搜索 + 视频合成
+2. 完全不需要 GPU，2核4G 的服务器就能跑
 
-只有以下场景需要 AI 依赖：
-- **人声分离**（`demucs` + `torch`）：从 MV 中提取伴奏音轨
+只有以下场景需要额外安装：
+- **更高质量分离**（`demucs`）：复杂和声/Live 版场景 Demucs 更强
 - **AI 识别歌词**（`whisper`）：自动从音频识别歌词
 - **时间轴对齐**（`stable-ts`）：将纯文本歌词与音频对齐
 
-> ⚡ 首次运行 AI 功能时，模型会自动下载到 `~/.cache/`，Demucs 模型约 1GB，Whisper large-v3 模型约 3GB。
+> ⚡ 首次运行人声分离时，vocal-remover 模型会自动下载（55MB）。如果安装了 Demucs，会优先使用 Demucs 引擎。
 
 ### FFmpeg 安装
 
@@ -297,7 +312,7 @@ API 文档: http://localhost:8000/docs
 |----|------|
 | 前端 | React 18 + Vite + TailwindCSS |
 | 后端 | Python FastAPI + Uvicorn |
-| 人声分离 | Demucs v4 (PyTorch) |
+| 人声分离 | vocal-remover (轻量CPU) / Demucs v4 (高质量GPU) |
 | 语音识别 | Whisper large-v3 + stable-ts |
 | 歌词搜索 | 网易云音乐 API |
 | 假名标注 | fugashi (MeCab) + unidic-lite |

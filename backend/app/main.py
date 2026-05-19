@@ -8,7 +8,7 @@ import uuid
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional
+
 
 logger = logging.getLogger("ai-ktv")
 logging.basicConfig(level=logging.INFO)
@@ -441,7 +441,7 @@ async def _probe_video(job_id: str, video_path: Path):
 
 
 async def _run_separation(job_id: str):
-    """人声分离: FFmpeg提取音频 → Demucs分离"""
+    """人声分离: FFmpeg提取音频 → 自动选择引擎(Demucs/vocal-remover)分离"""
     job = jobs[job_id]
     video_path = job["video_info"]["path"]
     out_dir = OUTPUT_DIR / job_id
@@ -466,61 +466,35 @@ async def _run_separation(job_id: str):
             raise RuntimeError("音频提取失败")
 
         jobs[job_id]["progress"] = 10
-        jobs[job_id]["message"] = "音频已提取，正在启动 Demucs..."
+        jobs[job_id]["message"] = "音频已提取，正在启动人声分离..."
         await _push_progress(job_id, jobs[job_id])
 
-        # Step 2: Demucs 人声分离
-        demucs_out = out_dir / "demucs"
-        cmd_demucs = [
-            "python", "-m", "demucs",
-            "--two-stems", "vocals",
-            "-o", str(demucs_out),
-            str(audio_path),
-        ]
+        # Step 2: 人声分离（自动选择 Demucs 或 vocal-remover）
+        from app.services.separation import separate, detect_engine
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd_demucs,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+        engine = detect_engine()
+        logger.info(f"[{job_id}] 使用分离引擎: {engine}")
+
+        async def _progress_cb(progress: int, message: str):
+            jobs[job_id]["progress"] = progress
+            jobs[job_id]["message"] = message
+            await _push_progress(job_id, jobs[job_id])
+
+        vocals_path, accomp_path = await separate(
+            audio_path=audio_path,
+            output_dir=out_dir,
+            progress_callback=_progress_cb,
         )
-
-        assert proc.stdout
-        output_lines: list[str] = []
-        async for line in proc.stdout:
-            text = line.decode("utf-8", errors="replace").strip()
-            if text:
-                output_lines.append(text)
-            if "%" in text:
-                try:
-                    pct = int(text.split("%")[0].split()[-1])
-                    mapped = 10 + int(pct * 0.80)  # 10~90
-                    jobs[job_id]["progress"] = mapped
-                    jobs[job_id]["message"] = f"人声分离中 {pct}%"
-                    await _push_progress(job_id, jobs[job_id])
-                except Exception:
-                    pass
-
-        await proc.wait()
-
-        if proc.returncode != 0:
-            error_detail = "\n".join(output_lines[-5:]) if output_lines else "（无输出）"
-            raise RuntimeError(f"Demucs 执行失败: {error_detail}")
-
-        # 找到输出文件
-        vocals_path = _find_stem_file(demucs_out, "vocals")
-        accomp_path = _find_stem_file(demucs_out, "no_vocals")
-
-        if not vocals_path or not accomp_path:
-            raise RuntimeError("找不到分离结果文件")
 
         jobs[job_id]["separation"] = {
             "status": "done",
+            "engine": engine,
             "vocals_path": str(vocals_path),
             "accompaniment_path": str(accomp_path),
         }
         jobs[job_id]["status"] = "separated"
         jobs[job_id]["progress"] = 95
-        jobs[job_id]["message"] = "人声分离完成！可以开始处理歌词"
+        jobs[job_id]["message"] = f"人声分离完成（{engine}）！可以开始处理歌词"
         await _push_progress(job_id, jobs[job_id])
 
     except Exception as e:
@@ -679,11 +653,4 @@ async def _run_render(job_id: str, options: RenderOptions):
         await _push_progress(job_id, jobs[job_id])
 
 
-# ============ 工具函数 ============
 
-def _find_stem_file(base_dir: Path, stem_name: str) -> Optional[Path]:
-    """在 demucs 输出目录中递归查找指定 stem 文件"""
-    for p in base_dir.rglob(f"{stem_name}.*"):
-        if p.suffix in (".wav", ".mp3", ".flac") and p.is_file():
-            return p
-    return None

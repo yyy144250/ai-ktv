@@ -1,5 +1,5 @@
 # GPU 版本 Dockerfile（包含完整 AI 依赖）
-# 镜像较大 (~8GB)，但支持 Demucs 人声分离和 Whisper 语音识别
+# 镜像较大 (~8GB)，但支持 Demucs 高质量人声分离和 Whisper 语音识别
 FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
 
 # 安装系统依赖
@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     mecab \
     libmecab-dev \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,19 +18,23 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装 AI 模型依赖
+# 安装 AI 模型依赖（Demucs 高质量分离 + Whisper 语音识别）
 RUN pip install --no-cache-dir \
     demucs==4.0.1 \
+    torchaudio==2.4.0 \
     openai-whisper==20240930 \
     stable-ts==2.16.0
 
 # 下载 unidic 词典
 RUN python -c "import unidic_lite; print(unidic_lite.DICDIR)"
 
+# 设置环境变量：优先使用 Demucs 引擎
+ENV SEPARATOR_ENGINE=demucs
+
 COPY . .
 
 # 创建必要目录
-RUN mkdir -p uploads outputs
+RUN mkdir -p uploads outputs models/vocal-remover
 
 EXPOSE 8000
 
